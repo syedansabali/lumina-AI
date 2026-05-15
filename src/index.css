@@ -1,0 +1,79 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&family=Sora:wght@600;700&family=JetBrains+Mono:wght@400;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-headline: "Sora", sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+
+  --color-surface: #050508;
+  --color-surface-dim: #050508;
+  --color-surface-bright: #1c1c24;
+  --color-surface-container-lowest: #020204;
+  --color-surface-container-low: #0a0a0f;
+  --color-surface-container: #111116;
+  --color-surface-container-high: #191921;
+  --color-surface-container-highest: #25252e;
+  
+  --color-on-surface: #ffffff;
+  --color-on-surface-variant: rgba(255, 255, 255, 0.6);
+  
+  --color-primary: #bc13fe;
+  --color-on-primary: #ffffff;
+  --color-primary-container: rgba(188, 19, 254, 0.2);
+  
+  --color-secondary: #00f2ff;
+  --color-on-secondary: #050508;
+  --color-secondary-container: rgba(0, 242, 255, 0.2);
+  
+  --color-tertiary: #fbabff;
+  --color-on-tertiary: #580065;
+
+  --radius-xl: 1rem;
+  --radius-lg: 0.75rem;
+  --radius-md: 0.5rem;
+}
+
+@layer base {
+  body {
+    @apply bg-[#050508] text-white font-sans antialiased;
+  }
+}
+
+@layer components {
+  .atmosphere {
+    @apply fixed inset-0 pointer-events-none -z-10;
+    background: 
+      radial-gradient(circle at 80% 20%, rgba(188, 19, 254, 0.15) 0%, transparent 40%),
+      radial-gradient(circle at 20% 80%, rgba(0, 242, 255, 0.1) 0%, transparent 50%);
+  }
+
+  .glass-panel {
+    @apply bg-white/[0.03] backdrop-blur-[12px] border border-white/[0.08];
+  }
+  
+  .glass-card {
+    @apply bg-white/[0.06] backdrop-blur-[40px] border border-white/[0.1];
+  }
+
+  .glow-cyan {
+    box-shadow: 0 0 15px rgba(0, 242, 255, 0.3);
+  }
+
+  .glow-purple {
+    box-shadow: 0 0 15px rgba(188, 19, 254, 0.3);
+  }
+
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+@keyframes scan {
+  from { top: -100px; }
+  to { top: 100%; }
+}
+
+.animate-scan {
+  animation: scan 3s infinite linear;
+}

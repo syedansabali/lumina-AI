@@ -1,0 +1,6 @@
+{
+  "name": "Lumina AI",
+  "description": "Smart Book & PDF Summarizer with AI-powered tutoring capabilities.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": []
+}
