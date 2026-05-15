@@ -1,11 +1,26 @@
 import { motion } from 'motion/react';
 import { Sparkles, Play, FileText as DocIcon, Search, BrainCircuit, Zap, ArrowRight } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { Button } from '@/src/components/ui/Button';
 import { cn } from '../lib/utils';
 import { useTranslation } from 'react-i18next';
+import { useAuth } from '../components/AuthProvider';
 
 export function LandingPage() {
   const { t } = useTranslation();
+  const { user, login } = useAuth();
+  const navigate = useNavigate();
+
+  const handleGetStarted = () => {
+    if (user) {
+      navigate('/dashboard');
+    } else {
+      login().then(() => {
+        navigate('/dashboard');
+      });
+    }
+  };
+
   return (
     <div className="relative min-h-screen">
       {/* Hero Section */}
@@ -49,7 +64,7 @@ export function LandingPage() {
             transition={{ delay: 0.3 }}
             className="flex flex-col md:flex-row items-center justify-center gap-6"
           >
-            <Button size="lg" className="w-full md:w-auto h-16 text-lg">
+            <Button size="lg" className="w-full md:w-auto h-16 text-lg" onClick={handleGetStarted}>
               {t('landing.getStarted')}
             </Button>
             <Button variant="glass" size="lg" className="w-full md:w-auto h-16 text-lg flex gap-2">
@@ -158,7 +173,7 @@ export function LandingPage() {
                 placeholder="Enter your work email" 
                 type="email"
               />
-              <Button size="lg" className="h-14">Get Started</Button>
+              <Button size="lg" className="h-14" onClick={handleGetStarted}>Get Started</Button>
             </div>
           </div>
         </div>

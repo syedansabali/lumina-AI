@@ -4,11 +4,18 @@ import { Button } from '@/src/components/ui/Button';
 import { cn } from '../../lib/utils';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '../AuthProvider';
+import { useNavigate } from 'react-router-dom';
 
 export function Navbar() {
   const { t, i18n } = useTranslation();
   const { user, login, logout } = useAuth();
   const location = useLocation();
+  const navigate = useNavigate();
+
+  const handleAuthAction = async () => {
+    await login();
+    navigate('/dashboard');
+  };
   const isDashboard = location.pathname.startsWith('/dashboard') || location.pathname === '/processing' || location.pathname === '/reader';
 
   const changeLanguage = (lng: string) => {
@@ -82,8 +89,8 @@ export function Navbar() {
             </div>
           ) : (
             <div className="flex items-center gap-4">
-              <Button variant="ghost" size="sm" onClick={login} className="text-[10px] uppercase font-bold">{t('nav.login')}</Button>
-              <Button variant="primary" size="md" onClick={login}>Sign Up</Button>
+              <Button variant="ghost" size="sm" onClick={handleAuthAction} className="text-[10px] uppercase font-bold">{t('nav.login')}</Button>
+              <Button variant="primary" size="md" onClick={handleAuthAction}>Sign Up</Button>
             </div>
           )}
         </div>
