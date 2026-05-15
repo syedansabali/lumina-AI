@@ -13,8 +13,10 @@ export function Navbar() {
   const navigate = useNavigate();
 
   const handleAuthAction = async () => {
-    await login();
-    navigate('/dashboard');
+    const loggedInUser = await login();
+    if (loggedInUser) {
+      navigate('/dashboard');
+    }
   };
   const isDashboard = location.pathname.startsWith('/dashboard') || location.pathname === '/processing' || location.pathname === '/reader';
 

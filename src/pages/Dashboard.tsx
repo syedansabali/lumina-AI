@@ -70,9 +70,9 @@ export function Dashboard() {
     return () => unsubscribe();
   }, [user]);
 
-  const handleUploadClick = () => {
+  const handleUploadClick = async () => {
     if (!user) {
-      login();
+      await login();
       return;
     }
     fileInputRef.current?.click();
@@ -102,6 +102,8 @@ export function Dashboard() {
       alert('Failed to upload PDF. Please try again.');
     } finally {
       setIsUploading(false);
+      // Reset input so the same file can be selected again
+      if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
 
@@ -123,7 +125,7 @@ export function Dashboard() {
       <input 
         type="file" 
         ref={fileInputRef} 
-        className="hidden" 
+        className="sr-only" 
         accept=".pdf"
         onChange={handleFileChange}
       />

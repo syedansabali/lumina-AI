@@ -11,13 +11,14 @@ export function LandingPage() {
   const { user, login } = useAuth();
   const navigate = useNavigate();
 
-  const handleGetStarted = () => {
+  const handleGetStarted = async () => {
     if (user) {
       navigate('/dashboard');
     } else {
-      login().then(() => {
+      const loggedInUser = await login();
+      if (loggedInUser) {
         navigate('/dashboard');
-      });
+      }
     }
   };
 

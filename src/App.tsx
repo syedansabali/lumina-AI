@@ -7,6 +7,8 @@ import { Navbar } from './components/layout/Navbar';
 import { Sidebar } from './components/layout/Sidebar';
 import { cn } from './lib/utils';
 
+import { ProtectedRoute } from './components/ProtectedRoute';
+
 function AppContent() {
   const location = useLocation();
   const isLanding = location.pathname === '/';
@@ -30,9 +32,9 @@ function AppContent() {
         )}>
           <Routes>
             <Route path="/" element={<LandingPage />} />
-            <Route path="/dashboard" element={<Dashboard />} />
-            <Route path="/processing" element={<Processing />} />
-            <Route path="/reader" element={<Reader />} />
+            <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+            <Route path="/processing" element={<ProtectedRoute><Processing /></ProtectedRoute>} />
+            <Route path="/reader" element={<ProtectedRoute><Reader /></ProtectedRoute>} />
           </Routes>
         </main>
       </div>
