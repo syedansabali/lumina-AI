@@ -8,8 +8,7 @@ const pdf = require('pdf-parse');
 import { v4 as uuidv4 } from 'uuid';
 import fs from 'fs';
 import Tesseract from 'tesseract.js';
-import { adminDb, firestore } from './src/lib/firebase-admin';
-
+import { adminDb, firestore } from './src/lib/firebase-admin.js';
 // Configuration
 const PORT = 3000;
 const UPLOAD_DIR = path.join(process.cwd(), 'uploads');
