@@ -1,9 +1,10 @@
 {
   "version": 2,
-  "buildCommand": "npm run build",
-  "outputDirectory": "dist",
   "rewrites": [
-    { "source": "/api/(.*)", "destination": "/api/$1" },
+    { "source": "/api/upload", "destination": "/api/upload" },
+    { "source": "/api/status", "destination": "/api/status" },
+    { "source": "/api/documents", "destination": "/api/documents" },
+    { "source": "/api/chat", "destination": "/api/chat" },
     { "source": "/(.*)", "destination": "/index.html" }
   ]
 }

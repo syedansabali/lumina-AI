@@ -2,11 +2,13 @@ import express from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import multer from 'multer';
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+const pdf = require('pdf-parse');
 import { v4 as uuidv4 } from 'uuid';
 import fs from 'fs';
 import Tesseract from 'tesseract.js';
-import { adminDb, firestore } from './src/lib/firebase-admin.js';
-import { extractPdfText } from './src/lib/pdf-utils.js';
+import { adminDb, firestore } from './src/lib/firebase-admin';
 
 // Configuration
 const PORT = 3000;
@@ -14,7 +16,7 @@ const UPLOAD_DIR = path.join(process.cwd(), 'uploads');
 
 // Ensure upload directory exists
 if (!fs.existsSync(UPLOAD_DIR)) {
-  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+  fs.mkdirSync(UPLOAD_DIR);
 }
 
 // In-memory job store - DEPRECATED, now using Firestore
@@ -84,11 +86,6 @@ async function startServer() {
     try {
       if (!req.file) {
         return res.status(400).json({ error: 'No file uploaded' });
-      }
-
-      // Validate file type
-      if (!req.file.mimetype.includes('pdf')) {
-        return res.status(400).json({ error: 'Only PDF files are supported' });
       }
 
       const userId = req.body.userId || 'anonymous'; // Fallback if no auth passed
@@ -312,27 +309,24 @@ async function processPdfBackground(jobId: string, filePath: string) {
       message: 'Parsing PDF structure...'
     });
 
-    // Extract PDF using pdfjs-dist
-    let extractedData;
+    let data;
     try {
-      extractedData = await extractPdfText(dataBuffer);
+      data = await pdf(dataBuffer);
     } catch (e) {
-      console.error('PDF extraction error:', e);
-      throw new Error('Failed to parse PDF. The file might be corrupted or in an unsupported format.');
+      throw new Error('Failed to parse PDF metadata. The file might be corrupted.');
     }
-
-    const { text: extractedText, pageCount } = extractedData;
 
     await updateJob({
       status: 'extracting',
       progress: 50,
-      message: `Extracting text from ${pageCount} pages...`,
-      pageCount
+      message: `Extracting text from ${data.numpages} pages...`,
+      pageCount: data.numpages
     });
 
+    let extractedText = data.text;
+    
     // OCR Fallback Check: if text is very sparse relative to pages (likely scanned PDF)
-    let finalText = extractedText;
-    if (extractedText.trim().length < 50 && pageCount > 0) {
+    if (extractedText.trim().length < 50 && data.numpages > 0) {
       await updateJob({
         message: 'No selectable text found. Attempting OCR scan...',
         progress: 60
@@ -343,11 +337,10 @@ async function processPdfBackground(jobId: string, filePath: string) {
         await worker.terminate();
         
         if (extractedText.trim().length < 10) {
-          finalText = "This document appears to be a scanned image PDF. In a full production environment with Cloud Vision API, the complete text would be extracted here. [OCR Placeholder]";
+          extractedText = "This document appears to be a scanned image PDF. In a full production environment with Cloud Vision API, the complete text would be extracted here. [OCR Placeholder]";
         }
       } catch (ocrError) {
         console.error('OCR Error:', ocrError);
-        finalText = extractedText || "[Unable to extract text]";
       }
     }
 
@@ -358,7 +351,7 @@ async function processPdfBackground(jobId: string, filePath: string) {
     });
 
     // RAG Pipeline: Chunking
-    const chunks = chunkText(finalText);
+    const chunks = chunkText(extractedText);
 
     // Simulate indexing delay for large docs
     await new Promise(r => setTimeout(r, 1500));
@@ -366,7 +359,7 @@ async function processPdfBackground(jobId: string, filePath: string) {
     await updateJob({
       status: 'completed',
       progress: 100,
-      text: finalText,
+      text: extractedText,
       chunks,
       message: 'Analysis complete. Document ready.'
     });
@@ -378,14 +371,12 @@ async function processPdfBackground(jobId: string, filePath: string) {
     console.error('Processing error:', error);
     await updateJob({
       status: 'failed',
-      error: error.message || 'Unknown error occurred',
-      message: `Error: ${error.message || 'Unknown error'}`
+      error: error.message,
+      message: `Error: ${error.message}`
     });
     if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
   }
 }
 
-startServer().catch(error => {
-  console.error('Failed to start server:', error);
-  process.exit(1);
-});
+startServer();
+
