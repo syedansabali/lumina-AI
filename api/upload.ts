@@ -1,11 +1,9 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import formidable from 'formidable';
-import fs from 'fs';
-import { initializeApp, cert, getApps } from 'firebase-admin/app';
+import { initializeApp, getApps, cert } from 'firebase-admin/app';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
+import { GoogleGenAI } from '@google/genai';
 import { v4 as uuidv4 } from 'uuid';
 
-// Initialize Firebase Admin using env vars (NOT a file)
 if (!getApps().length) {
   initializeApp({
     credential: cert({
@@ -18,47 +16,74 @@ if (!getApps().length) {
 
 const db = getFirestore();
 
-export const config = {
-  api: { bodyParser: false }, // Required for file uploads
-};
+function chunkText(text: string, size = 1000, overlap = 200) {
+  const chunks = [];
+  let start = 0, index = 0;
+  while (start < text.length) {
+    chunks.push({ text: text.substring(start, start + size), index });
+    start += size - overlap;
+    index++;
+  }
+  return chunks;
+}
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  const form = formidable({ maxFileSize: 10 * 1024 * 1024 }); // 10MB — Vercel limit
+  try {
+    const { fileBase64, filename, userId } = req.body;
+    if (!fileBase64) return res.status(400).json({ error: 'No file data received' });
 
-  form.parse(req, async (err, fields, files) => {
-    if (err) return res.status(400).json({ error: 'File parse failed: ' + err.message });
+    const jobId = uuidv4();
 
-    const file = Array.isArray(files.file) ? files.file[0] : files.file;
-    if (!file) return res.status(400).json({ error: 'No file uploaded' });
+    await db.collection('documents').doc(jobId).set({
+      id: jobId,
+      userId: userId || 'anonymous',
+      status: 'extracting',
+      progress: 30,
+      message: 'Extracting text using Gemini AI...',
+      filename: filename || 'document.pdf',
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
 
-    if (!file.mimetype?.includes('pdf'))
-      return res.status(400).json({ error: 'Only PDF files are supported' });
+    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
+    const response = await ai.models.generateContent({
+      model: 'gemini-1.5-flash',
+      contents: [{
+        role: 'user',
+        parts: [
+          { inlineData: { mimeType: 'application/pdf', data: fileBase64 } },
+          { text: 'Extract ALL text from this PDF completely and accurately.' },
+        ],
+      }],
+    });
 
-    try {
-      const pdfBuffer = fs.readFileSync(file.filepath);
-      const base64Pdf = pdfBuffer.toString('base64');
+    const extractedText = response.candidates?.[0]?.content?.parts?.[0]?.text || '';
 
-      const jobId = uuidv4();
-      const userId = Array.isArray(fields.userId) ? fields.userId[0] : fields.userId || 'anonymous';
-
-      // Store PDF as base64 in Firestore (no disk storage needed)
-      await db.collection('documents').doc(jobId).set({
-        id: jobId,
-        userId,
-        status: 'processing',
-        progress: 10,
-        message: 'File received, processing...',
-        filename: file.originalFilename,
-        pdfBase64: base64Pdf,
-        createdAt: FieldValue.serverTimestamp(),
+    if (!extractedText || extractedText.length < 10) {
+      await db.collection('documents').doc(jobId).update({
+        status: 'failed',
+        message: 'Could not extract text from PDF.',
         updatedAt: FieldValue.serverTimestamp(),
       });
-
-      res.json({ jobId });
-    } catch (error: any) {
-      res.status(500).json({ error: error.message });
+      return res.status(500).json({ error: 'Text extraction failed' });
     }
-  });
+
+    await db.collection('documents').doc(jobId).update({
+      status: 'completed',
+      progress: 100,
+      message: 'Document ready!',
+      text: extractedText,
+      chunks: chunkText(extractedText),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+
+    res.json({ jobId });
+  } catch (error: any) {
+    console.error('Upload error:', error);
+    res.status(500).json({ error: error.message || 'Upload failed' });
+  }
 }
