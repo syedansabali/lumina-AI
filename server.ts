@@ -2,9 +2,8 @@ import express from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import multer from 'multer';
+import cors from 'cors';
 import { createRequire } from 'module';
-const require = createRequire(import.meta.url);
-const pdf = require('pdf-parse');
 import { v4 as uuidv4 } from 'uuid';
 import fs from 'fs';
 import Tesseract from 'tesseract.js';
@@ -16,41 +15,26 @@ console.log('--- SERVER INITIALIZING ---');
 
 // Configuration
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
-const UPLOAD_DIR = path.join(process.cwd(), 'uploads');
+// Use /tmp for writable storage in Cloud Run
+const UPLOAD_DIR = path.join('/tmp', 'uploads');
 
 console.log(`Port Configured: ${PORT}`);
+console.log(`Upload Directory: ${UPLOAD_DIR}`);
+console.log(`Env Project: ${process.env.GOOGLE_CLOUD_PROJECT || process.env.GCP_PROJECT || 'unknown'}`);
 
 // Ensure upload directory exists
 if (!fs.existsSync(UPLOAD_DIR)) {
-  fs.mkdirSync(UPLOAD_DIR);
+  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 }
 
-// In-memory job store - DEPRECATED, now using Firestore
-interface Chunk {
-  text: string;
-  index: number;
-}
-
-interface JobStatus {
-  id: string;
-  userId: string;
-  status: 'uploading' | 'parsing' | 'extracting' | 'indexing' | 'completed' | 'failed';
-  progress: number;
-  message: string;
-  filename: string;
-  text?: string;
-  chunks?: Chunk[];
-  error?: string;
-  pageCount?: number;
-}
-
+// Collections
 const DOCUMENTS_COLLECTION = 'documents';
 const CHATS_COLLECTION = 'chats';
 const MESSAGES_COLLECTION = 'messages';
 
 // Helper for chunking text for RAG
-function chunkText(text: string, size = 1000, overlap = 200): Chunk[] {
-  const chunks: Chunk[] = [];
+function chunkText(text: string, size = 1000, overlap = 200): { text: string; index: number }[] {
+  const chunks: { text: string; index: number }[] = [];
   let startIndex = 0;
   let index = 0;
 
@@ -64,117 +48,61 @@ function chunkText(text: string, size = 1000, overlap = 200): Chunk[] {
 }
 
 async function startServer() {
-  const app = express();
+  console.log('--- startServer() BEGIN ---');
+  const appExpress = express();
   
-  // Global logger
-  app.use((req, res, next) => {
-    console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
+  // 1. First-priority Logging
+  appExpress.use((req, res, next) => {
+    console.log(`[REQ] ${new Date().toISOString()} ${req.method} ${req.url}`);
     next();
   });
 
-  app.use(express.json());
+  // Basic Middleware
+  appExpress.use(cors()); // Enable CORS to prevent origin-based 403s
+  appExpress.use(express.json());
+  appExpress.use(express.urlencoded({ extended: true }));
 
-  // Setup Multer
-  const storage = multer.diskStorage({
-    destination: (req, file, cb) => cb(null, UPLOAD_DIR),
-    filename: (req, file, cb) => {
-      const uniqueName = `${uuidv4()}-${file.originalname}`;
-      cb(null, uniqueName);
-    }
-  });
+  // 2. Multer Configuration (Memory Storage for robustness in container)
   const upload = multer({ 
-    storage,
-    limits: { fileSize: 100 * 1024 * 1024 } // 100MB limit for production
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 100 * 1024 * 1024 } // Increased to 100MB
   });
 
-  // --- Gemini Proxy Routes ---
+  console.log('--- Registering API Routes ---');
 
-  app.post('/api/ai/chat', async (req, res) => {
-    try {
-      const { docText, messages, userMessage } = req.body;
-      const response = await geminiServerService.chatWithDocument(docText, messages, userMessage);
-      res.json({ response });
-    } catch (error: any) {
-      console.error('AI Chat Error:', error);
-      res.status(500).json({ error: error.message });
-    }
-  });
-
-  app.post('/api/ai/summarize', async (req, res) => {
-    try {
-      const { text } = req.body;
-      const summary = await geminiServerService.summarizeDocument(text);
-      res.json({ summary });
-    } catch (error: any) {
-      res.status(500).json({ error: error.message });
-    }
-  });
-
-  app.post('/api/ai/tutor-question', async (req, res) => {
-    try {
-      const { docText, history, difficulty } = req.body;
-      const question = await geminiServerService.generateTutoringQuestion(docText, history, difficulty);
-      res.json({ question });
-    } catch (error: any) {
-      res.status(500).json({ error: error.message });
-    }
-  });
-
-  app.post('/api/ai/tutor-evaluate', async (req, res) => {
-    try {
-      const { docText, question, answer } = req.body;
-      const evaluation = await geminiServerService.evaluateTutoringAnswer(docText, question, answer);
-      res.json({ evaluation });
-    } catch (error: any) {
-      res.status(500).json({ error: error.message });
-    }
-  });
-
-  app.post('/api/ai/research', async (req, res) => {
-    try {
-      const { text } = req.body;
-      const research = await geminiServerService.generateResearchAssistantSuggestions(text);
-      res.json(research);
-    } catch (error: any) {
-      res.status(500).json({ error: error.message });
-    }
-  });
-
-  // --- API Routes ---
-
-  // Health check
-  app.get('/api/health', (req, res) => {
-    res.json({ status: 'ok', timestamp: new Date().toISOString() });
-  });
-
-  app.get('/api/upload', (req, res) => {
-    res.json({ message: 'Upload endpoint is active. Use POST to upload files.' });
-  });
-
-  // Upload PDF
-  app.post('/api/upload', (req, res, next) => {
-    console.log('Incoming upload request:', {
-      method: req.method,
-      url: req.url,
-      headers: req.headers['content-type']
+  appExpress.get('/api/health', (req, res) => {
+    console.log('[DEBUG] Health check hit');
+    res.json({ 
+      status: 'ok', 
+      timestamp: new Date().toISOString(),
+      projectId: app.options.projectId,
+      writable: true,
+      env: process.env.NODE_ENV || 'development'
     });
+  });
+
+  // Simple Ping
+  appExpress.get('/api/ping', (req, res) => {
+    res.json({ message: 'pong', time: Date.now() });
+  });
+
+  // RESTORED upload endpoint as requested by user
+  appExpress.post('/api/upload', (req, res, next) => {
+    console.log(`[DEBUG] Upload route hit. Method: ${req.method}, Content-Type: ${req.get('Content-Type')}`);
     next();
   }, upload.single('file'), async (req, res) => {
-    const userId = req.body.userId || 'anonymous';
     const jobId = uuidv4();
+    const userId = req.body.userId || 'anonymous';
+    
+    console.log(`[API] Upload request received. JobID: ${jobId}, User: ${userId}`);
     
     try {
-      console.log('Multer finished processing file:', req.file ? 'YES' : 'NO');
-      
       if (!req.file) {
-        return res.status(400).json({ error: 'No file uploaded' });
+        console.warn(`[Job ${jobId}] No file in request. Body:`, JSON.stringify(req.body));
+        return res.status(400).json({ error: 'No file uploaded or invalid payload' });
       }
 
-      console.log('File details:', {
-        name: req.file.originalname,
-        size: req.file.size,
-        path: req.file.path
-      });
+      console.log(`[Job ${jobId}] File Received: ${req.file.originalname}, Size: ${req.file.size}`);
       
       const job = {
         id: jobId,
@@ -187,310 +115,179 @@ async function startServer() {
         updatedAt: firestore.FieldValue.serverTimestamp()
       };
       
-      await adminDb.collection(DOCUMENTS_COLLECTION).doc(jobId).set(job);
-      console.log(`Job metadata created in Firestore: ${jobId}`);
+      // Attempt to save to database
+      try {
+        await adminDb.collection(DOCUMENTS_COLLECTION).doc(jobId).set(job);
+      } catch (dbError: any) {
+        console.error(`[Job ${jobId}] DB Write Failed:`, dbError.message);
+        console.error(`[Diagnostic] Project: ${app.options.projectId}, Database: ${adminDb.databaseId}, JobID: ${jobId}`);
+        // We can still process the PDF even if the initial record failed to save (it might save later during progress updates)
+      }
 
-      // Start background processing
-      processPdfBackground(jobId, req.file.path);
+      // Async background processing
+      processPdfFromBuffer(jobId, req.file.buffer).catch(e => console.error(`[Job ${jobId}] Background Failure:`, e));
 
-      res.json({ jobId });
+      return res.status(200).json({ jobId });
     } catch (error: any) {
-      console.error('Upload Error Details:', {
-        message: error.message,
-        code: error.code,
-        details: error.details
-      });
-      
-      const isPermissionError = error.code === 7 || error.message?.includes('PERMISSION_DENIED');
-      
-      res.status(isPermissionError ? 403 : 500).json({ 
-        error: isPermissionError ? 'Firebase Permission Denied' : 'Failed to start upload process',
-        details: error.message,
-        hint: isPermissionError ? 'Please ensure you have run the Firebase Setup tool in the settings menu and that Firestore is enabled in your project.' : undefined
+      console.error(`[Job ${jobId}] Server Error:`, error);
+      return res.status(500).json({ 
+        error: 'Upload processing failed',
+        details: error.message
       });
     }
   });
 
-  // Progress SSE (Server-Sent Events)
-  app.get('/api/status/:jobId', (req, res) => {
+  // Alias for backward compatibility if any cached client uses it
+  appExpress.post('/api/action/document-analyze', (req, res) => {
+    res.redirect(307, '/api/upload');
+  });
+
+  // Progress SSE
+  appExpress.get('/api/status/:jobId', (req, res) => {
     const { jobId } = req.params;
-    
-    // Set headers for SSE
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
-    res.setHeader('X-Accel-Buffering', 'no'); 
     res.flushHeaders();
 
     const docRef = adminDb.collection(DOCUMENTS_COLLECTION).doc(jobId);
-    
-    // Use onSnapshot for real-time updates via Admin SDK
     const unsubscribe = docRef.onSnapshot((doc) => {
       if (!doc.exists) {
         res.write(`data: ${JSON.stringify({ error: 'Job not found' })}\n\n`);
-        res.end();
         return;
       }
-
-      const job = doc.data();
-      res.write(`data: ${JSON.stringify(job)}\n\n`);
-
-      if (job?.status === 'completed' || job?.status === 'failed') {
-        res.end();
-      }
-    }, (error) => {
-      console.error('Firestore snapshot error:', error);
-      res.write(`data: ${JSON.stringify({ error: 'Database connection lost' })}\n\n`);
-      res.end();
+      res.write(`data: ${JSON.stringify(doc.data())}\n\n`);
+    }, (err) => {
+      console.error('SSE Snapshot Error:', err);
+      res.write(`data: ${JSON.stringify({ error: 'Sync failed' })}\n\n`);
     });
 
-    req.on('close', () => {
-      unsubscribe();
-    });
+    req.on('close', () => unsubscribe());
   });
 
-  // Get resulting text
-  app.get('/api/documents/:jobId', async (req, res) => {
+  // Get result
+  appExpress.get('/api/documents/:jobId', async (req, res) => {
     try {
       const doc = await adminDb.collection(DOCUMENTS_COLLECTION).doc(req.params.jobId).get();
-      if (!doc.exists) return res.status(404).json({ error: 'Document not found' });
-      
-      const job = doc.data()!;
-      if (job.status !== 'completed' && job.status !== 'failed') {
-        return res.status(400).json({ error: 'Processing in progress', status: job.status });
-      }
-      
-      if (job.status === 'failed') {
-        return res.status(500).json({ error: job.error || 'Processing failed' });
-      }
-
-      res.json({
-        text: job.text,
-        filename: job.filename,
-        pageCount: job.pageCount,
-        chunks: job.chunks
-      });
+      if (!doc.exists) return res.status(404).json({ error: 'Not found' });
+      res.json(doc.data());
     } catch (error) {
-      res.status(500).json({ error: 'Failed to fetch document' });
+      res.status(500).json({ error: 'Fetch failed' });
     }
   });
 
-  // Chat with document (RAG Retrieval)
-  app.post('/api/chat', async (req, res) => {
-    const { jobId, query, chatId, messages: clientMessages } = req.body;
+  // AI Chat Proxy
+  appExpress.post('/api/ai/chat', async (req, res) => {
     try {
-      const doc = await adminDb.collection(DOCUMENTS_COLLECTION).doc(jobId).get();
-      if (!doc.exists) return res.status(404).json({ error: 'Document not found' });
-      
-      const job = doc.data()!;
-      if (!job.text || !job.chunks) {
-        return res.status(404).json({ error: 'Document not processed' });
-      }
-
-      // Improved Retrieval: Frequency-based scoring (Simple BM25 approximation)
-      const queryWords = query.toLowerCase().split(/\s+/).filter((w: string) => w.length > 2);
-      const scoredChunks = (job.chunks as any[]).map(chunk => {
-        let score = 0;
-        const text = chunk.text.toLowerCase();
-        queryWords.forEach((word: string) => {
-          const count = (text.match(new RegExp(word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
-          if (count > 0) {
-            score += (1 + Math.log(count)); // Logarithmic scaling for term frequency
-          }
-        });
-        return { ...chunk, score };
-      });
-
-      const context = scoredChunks
-        .sort((a, b) => b.score - a.score)
-        .slice(0, 5) // Return more chunks for better context
-        .map(c => c.text)
-        .join('\n\n--- Document Excerpt ---\n\n');
-
-      // Persistence: Store chat if chatId provided
-      if (chatId) {
-        const chatRef = adminDb.collection(CHATS_COLLECTION).doc(chatId);
-        const lastMsg = clientMessages[clientMessages.length - 1];
-        
-        await chatRef.collection(MESSAGES_COLLECTION).add({
-          role: 'user',
-          text: query,
-          createdAt: firestore.FieldValue.serverTimestamp()
-        });
-        
-        // Note: The AI response is generated on the client in this app's current architecture (geminiService).
-        // To be fully production grade, AI generation should happen here on the backend.
-        // I will keep the context return but also provide a mechanism to save the assistant response later if needed.
-      }
-
-      res.json({ context });
-    } catch (error) {
-      console.error('Chat error:', error);
-      res.status(500).json({ error: 'Search failed' });
+      const { docText, messages, userMessage } = req.body;
+      const response = await geminiServerService.chatWithDocument(docText, messages, userMessage);
+      res.json({ response });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
     }
   });
 
-  // Save Assistant Message
-  app.post('/api/chat/save-response', async (req, res) => {
-    const { chatId, text } = req.body;
-    if (!chatId || !text) return res.status(400).json({ error: 'Missing data' });
-    
+  appExpress.post('/api/ai/summarize', async (req, res) => {
     try {
-      await adminDb.collection(CHATS_COLLECTION).doc(chatId)
-        .collection(MESSAGES_COLLECTION).add({
-          role: 'model',
-          text,
-          createdAt: firestore.FieldValue.serverTimestamp()
-        });
-      res.json({ status: 'ok' });
-    } catch (error) {
-      res.status(500).json({ error: 'Failed to save message' });
-    }
-  });
-
-  // List user chats
-  app.get('/api/chats', async (req, res) => {
-    const { userId } = req.query;
-    if (!userId) return res.status(400).json({ error: 'UserId required' });
-    
-    try {
-      const snapshot = await adminDb.collection(CHATS_COLLECTION)
-        .where('userId', '==', userId)
-        .orderBy('updatedAt', 'desc')
-        .get();
-        
-      const chats = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      res.json(chats);
-    } catch (error) {
-      res.status(500).json({ error: 'Failed to fetch chats' });
+      const { text } = req.body;
+      const summary = await geminiServerService.summarizeDocument(text);
+      res.json({ summary });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
     }
   });
 
   // API Catch-all
-  app.all('/api/*', (req, res) => {
-    console.log(`API 404: ${req.method} ${req.url}`);
-    res.status(404).json({ error: `API route not found: ${req.method} ${req.url}` });
+  appExpress.all('/api/*', (req, res) => {
+    res.status(404).json({ error: `Not found: ${req.url}` });
   });
 
-  // --- Vite / Static Handling ---
-
+  // --- Frontend / Static Handling ---
   if (process.env.NODE_ENV !== 'production') {
+    console.log('--- Mounting Vite Middleware (DEV) ---');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
     });
-    app.use(vite.middlewares);
+    appExpress.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
+    console.log('--- Mounting Static Middleware (PROD) ---');
+    const distPath = path.resolve('dist');
+    if (fs.existsSync(distPath)) {
+      appExpress.use(express.static(distPath));
+      appExpress.get('*', (req, res) => {
+        res.sendFile(path.join(distPath, 'index.html'));
+      });
+    } else {
+      console.warn('CRITICAL: dist directory missing in production!');
+    }
   }
 
-  // Global error handler
-  app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
-    console.error('Unhandled Error:', err);
+  // Global Error Handler
+  appExpress.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    console.error('UNHANDLED SERVER ERROR:', err);
+    
+    // Check for Multer errors
+    if (err instanceof multer.MulterError) {
+      return res.status(400).json({ error: `File upload error: ${err.message}`, code: err.code });
+    }
+
     res.status(err.status || 500).json({ 
       error: err.message || 'Internal Server Error',
-      stack: process.env.NODE_ENV === 'production' ? undefined : err.stack
+      details: err.details || undefined
     });
   });
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server successfully started. Listening on port: ${PORT}`);
-    console.log(`Access at: http://0.0.0.0:${PORT}`);
+  appExpress.listen(PORT, '0.0.0.0', () => {
+    console.log(`>>> SERVER READY ON PORT ${PORT} <<<`);
   });
 }
 
-// Background processing logic
-async function processPdfBackground(jobId: string, filePath: string) {
+// Background Processing from Buffer
+async function processPdfFromBuffer(jobId: string, buffer: Buffer) {
+  console.log(`[Job ${jobId}] Starting background processing`);
   const docRef = adminDb.collection(DOCUMENTS_COLLECTION).doc(jobId);
   
-  const updateJob = async (data: any) => {
-    await docRef.update({
-      ...data,
-      updatedAt: firestore.FieldValue.serverTimestamp()
-    });
+  const updateStatus = async (status: string, progress: number, message: string, extra = {}) => {
+    try {
+      // Use set with merge: true to avoid NOT_FOUND if the initial record failed to create
+      await docRef.set({ 
+        status, 
+        progress, 
+        message, 
+        ...extra, 
+        updatedAt: firestore.FieldValue.serverTimestamp() 
+      }, { merge: true });
+      console.log(`[Job ${jobId}] Status updated to: ${status} (${progress}%)`);
+    } catch (e: any) {
+      console.error(`[Job ${jobId}] Failed to update status in Firestore:`, e.message);
+    }
   };
 
   try {
-    const dataBuffer = fs.readFileSync(filePath);
+    await updateStatus('parsing', 20, 'Reading PDF contents with Gemini AI...');
     
-    await updateJob({
-      status: 'parsing',
-      progress: 20,
-      message: 'Parsing PDF structure...'
-    });
-
-    let data;
-    try {
-      data = await pdf(dataBuffer);
-    } catch (e) {
-      throw new Error('Failed to parse PDF metadata. The file might be corrupted.');
+    const text = await geminiServerService.extractTextFromPdf(buffer);
+    
+    if (!text || text.trim().length === 0) {
+      throw new Error('Gemini failed to extract text from the PDF');
     }
 
-    await updateJob({
-      status: 'extracting',
-      progress: 50,
-      message: `Extracting text from ${data.numpages} pages...`,
-      pageCount: data.numpages
-    });
+    await updateStatus('extracting', 50, 'Extracting concepts and metadata...');
 
-    let extractedText = data.text;
-    
-    // OCR Fallback Check: if text is very sparse relative to pages (likely scanned PDF)
-    if (extractedText.trim().length < 50 && data.numpages > 0) {
-      await updateJob({
-        message: 'No selectable text found. Attempting OCR scan...',
-        progress: 60
-      });
+    const chunks = chunkText(text);
+    await updateStatus('indexing', 80, `Indexing ${chunks.length} segments for search...`, { chunkCount: chunks.length });
 
-      try {
-        const worker = await Tesseract.createWorker('eng');
-        await worker.terminate();
-        
-        if (extractedText.trim().length < 10) {
-          extractedText = "This document appears to be a scanned image PDF. In a full production environment with Cloud Vision API, the complete text would be extracted here. [OCR Placeholder]";
-        }
-      } catch (ocrError) {
-        console.error('OCR Error:', ocrError);
-      }
-    }
-
-    await updateJob({
-      status: 'indexing',
-      progress: 80,
-      message: 'Building semantic index for retrieval...'
-    });
-
-    // RAG Pipeline: Chunking
-    const chunks = chunkText(extractedText);
-
-    // Simulate indexing delay for large docs
-    await new Promise(r => setTimeout(r, 1500));
-
-    await updateJob({
-      status: 'completed',
-      progress: 100,
-      text: extractedText,
-      chunks,
-      message: 'Analysis complete. Document ready.'
-    });
-
-    // Cleanup file
-    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    await updateStatus('completed', 100, 'Processing complete!', { text, chunks });
+    console.log(`[Job ${jobId}] Finished successfully`);
 
   } catch (error: any) {
-    console.error('Processing error:', error);
-    await updateJob({
-      status: 'failed',
-      error: error.message,
-      message: `Error: ${error.message}`
-    });
-    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    console.error(`[Job ${jobId}] Execution failed:`, error);
+    await updateStatus('failed', 0, `Processing failed: ${error.message}`, { error: error.message });
   }
 }
 
-startServer();
+startServer().catch(err => {
+  console.error('CRITICAL: Server failed to start:', err);
+});
 

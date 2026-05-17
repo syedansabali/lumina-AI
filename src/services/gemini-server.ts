@@ -9,6 +9,19 @@ const ai = new GoogleGenAI({
   }
 });
 
+async function safeGenerateContent(params: any) {
+  try {
+    return await ai.models.generateContent(params);
+  } catch (error: any) {
+    if (error.message?.includes('leaked') || (error.error?.message?.includes('leaked'))) {
+      console.error('--- CRITICAL: GEMINI API KEY LEAKED ---');
+      console.error('The current GEMINI_API_KEY has been reported as leaked.');
+      console.log('Action Required: Please go to the AI Studio Settings menu and provide a fresh, valid Gemini API Key.');
+    }
+    throw error;
+  }
+}
+
 export const geminiServerService = {
   async chatWithDocument(docText: string, messages: any[], userMessage: string) {
     const prompt = `
@@ -25,16 +38,37 @@ export const geminiServerService = {
       ${userMessage}
     `;
 
-    const result = await ai.models.generateContent({
+    const result = await safeGenerateContent({
       model: "gemini-3-flash-preview",
       contents: prompt
     });
     return result.text;
   },
 
+  async extractTextFromPdf(buffer: Buffer) {
+    const base64Data = buffer.toString('base64');
+    const result = await safeGenerateContent({
+      model: "gemini-3-flash-preview",
+      contents: {
+        parts: [
+          {
+            inlineData: {
+              data: base64Data,
+              mimeType: "application/pdf"
+            }
+          },
+          {
+            text: "Extract and return all the text from this PDF document as accurately as possible. Output only the extracted text and nothing else."
+          }
+        ]
+      }
+    });
+    return result.text || "";
+  },
+
   async summarizeDocument(text: string) {
     const prompt = `Summarize the following document in a concise, professional executive summary. Use bullet points for key takeaways. \n\nDOCUMENT:\n${text.substring(0, 20000)}`;
-    const result = await ai.models.generateContent({
+    const result = await safeGenerateContent({
       model: "gemini-3-flash-preview",
       contents: prompt
     });
@@ -52,7 +86,7 @@ export const geminiServerService = {
       HISTORY:
       ${history.slice(-5).map((m: any) => m.text).join('\n')}
     `;
-    const result = await ai.models.generateContent({
+    const result = await safeGenerateContent({
       model: "gemini-3-flash-preview",
       contents: prompt
     });
@@ -71,7 +105,7 @@ export const geminiServerService = {
       DOCUMENT:
       ${docText.substring(0, 10000)}
     `;
-    const result = await ai.models.generateContent({
+    const result = await safeGenerateContent({
       model: "gemini-3-flash-preview",
       contents: prompt
     });
@@ -90,7 +124,7 @@ export const geminiServerService = {
       DOCUMENT:
       ${text.substring(0, 15000)}
     `;
-    const result = await ai.models.generateContent({
+    const result = await safeGenerateContent({
       model: "gemini-3-flash-preview",
       contents: prompt
     });

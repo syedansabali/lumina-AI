@@ -30,7 +30,11 @@ export function Processing() {
 
     const handleData = (data: any) => {
       if (data.error) {
-        setError(data.error);
+        if (data.error.includes('leaked')) {
+          setError('CRITICAL: Your Gemini API Key has been reported as leaked. Please go to the AI Studio Settings menu and provide a fresh API Key to continue.');
+        } else {
+          setError(data.error);
+        }
         eventSource.close();
         return;
       }

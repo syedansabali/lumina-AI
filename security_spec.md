@@ -1,26 +1,36 @@
-# Security Specification: Summarizer AI
+# Security Specification - PDF Summarizer AI
 
 ## Data Invariants
-1. A **User** profile can only be created/updated by the user with the same `uid`. No user can read another user's profile if it contains private info (though standard setup is basic info).
-2. A **Document** must belong to a specific `userId`. Only that user can read, update, or delete it.
-3. A **Chat** must belong to a `userId` and refer to a valid `docId` that the user owns.
-4. A **Message** must belong to a `chatId` that the user owns.
-5. `createdAt` and `ownerId`/`userId` fields are immutable after creation.
-6. Validation helpers must enforce strict types and sizes for all fields.
+1. A document must have a `userId` that matches the authenticated user's UID.
+2. Only the owner of a document can read its status, text, or chunks.
+3. Users can only see their own document history.
+4. Timestamps (`createdAt`, `updatedAt`) must be server-generated.
+5. The `status` field must be one of the pre-defined stages.
 
-## The Dirty Dozen (Attack Payloads)
-1. **Identity Spoofing**: Attempt to create a document with `userId: "malicious_user"` while authenticated as `victim_user`.
-2. **Access Escalation**: Attempt to read `/documents/doc_abc` belonging to User A while authenticated as User B.
-3. **Shadow Field Injection**: Attempt to update a document with an extra field `isPremium: true` to bypass paywalls.
-4. **State Shortcutting**: Attempt to update a document status directly from `parsing` to `completed` without the backend doing its work (Client side shouldn't be able to skip steps).
-5. **Resource Poisoning**: Send a 2MB string in the `filename` field.
-6. **Orphaned Writes**: Create a chat for a `docId` that does not exist.
-7. **Identity Integrity**: Update a message's `userId` (if it had one) to someone else's.
-8. **PII Leak**: Attempt to list all users in the system.
-9. **Timestamp Spoofing**: Set `createdAt` to a date in the past during creation.
-10. **Immutable Violation**: Change the `docId` a chat refers to.
-11. **Bulk Deletion**: Attempt to delete another user's entire document collection.
-12. **Type Poisoning**: Send a number in the `text` field of a document.
+## The "Dirty Dozen" Payloads
 
-# Test Runner Plan
-I will generate `firestore.rules.test.ts` to verify these protections.
+### Identity Spoofing
+1. `create` a document with `userId: "target_uid"` while authenticated as `attacker_uid`.
+2. `update` a document's `userId` from `attacker_uid` to `target_uid`.
+
+### Integrity Violation
+3. `create` a document with a missing `filename`.
+4. `create` a document with an invalid `status` (e.g., "admin").
+5. `update` a document's `text` field to a 2MB string (exceeding document limits indirectly or causing resource exhaustion).
+6. `create` a document with a client-side `createdAt` timestamp.
+
+### Unauthorized Access
+7. `get` a document belonging to another user.
+8. `list` documents without a filter on `userId`.
+9. `update` a document belonging to another user.
+10. `delete` a document belonging to another user.
+
+### State Shortcut
+11. `update` a document status directly to "completed" without going through "parsing".
+12. `update` a document with extra fields not in the schema (Ghost Fields).
+
+## Test Cases (Logic)
+- [FAIL] create(/documents/doc1) { userId: 'victim' } as 'attacker'
+- [FAIL] get(/documents/doc_of_victim) as 'attacker'
+- [FAIL] list(/documents) as 'attacker' (without userId query)
+- [FAIL] update(/documents/my_doc) { status: 'completed', secret: 'hacked' } - rejected by affectedKeys().hasOnly()
